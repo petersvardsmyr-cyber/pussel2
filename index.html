@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Strandpusslet</title>
+<style>
+  :root { --bg: #222; --accent: #ff9800; --text: #fff; }
+  body { 
+    background: var(--bg); color: var(--text); font-family: 'Comic Sans MS', sans-serif; 
+    display: flex; flex-direction: column; align-items: center; justify-content: center; 
+    min-height: 100vh; margin: 0; padding: 10px; touch-action: none;
+  }
+  h1 { margin: 0 0 10px; text-shadow: 2px 2px #000; font-size: 1.5rem; }
+  .controls { margin-bottom: 15px; display: flex; gap: 10px; }
+  button { 
+    background: var(--accent); border: none; padding: 10px 20px; border-radius: 20px; 
+    font-size: 1rem; font-weight: bold; cursor: pointer; box-shadow: 0 4px 0 #b36b00; 
+    color: #fff; transition: transform 0.1s;
+  }
+  button:active { transform: translateY(4px); box-shadow: none; }
+  
+  #puzzle-container {
+    position: relative;
+    width: 95vw;
+    max-width: 600px; /* Maxbredd på pusslet */
+    aspect-ratio: 4 / 3; /* Anpassa efter bildens format */
+    background: #333;
+    border: 4px solid #fff;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    display: grid;
+    grid-template-columns: repeat(4, 1fr); /* 4 kolumner */
+    grid-template-rows: repeat(3, 1fr);    /* 3 rader = 12 bitar totalt */
+    user-select: none;
+  }
+
+  .piece {
+    background-image: url('strand.png'); /* VIKTIGT: Namnet på din bild */
+    background-size: 400% 300%; /* Måste matcha grid (4x3) */
+    cursor: grab;
+    position: relative;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.2);
+    transition: transform 0.2s, opacity 0.2s;
+  }
+  
+  .piece.dragging { opacity: 0.5; transform: scale(0.9); z-index: 10; cursor: grabbing; box-shadow: 0 0 10px yellow; }
+  .piece.correct { z-index: 0; border: none; }
+  
+  /* Segerruta */
+  #winner {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85); align-items: center; justify-content: center;
+    flex-direction: column; z-index: 100;
+  }
+  #winner h2 { font-size: 3rem; color: #4caf50; margin: 0; animation: pop 0.5s infinite alternate; }
+  @keyframes pop { from { transform: scale(1); } to { transform: scale(1.1); } }
+
+  /* Hjälp-bild (facit) */
+  #hint {
+    position: absolute; top:0; left:0; width:100%; height:100%;
+    background-image: url('strand.png'); background-size: cover;
+    opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 5;
+  }
+</style>
+</head>
+<body>
+
+<h1>🌅 Strandpusslet</h1>
+
+<div class="controls">
+  <button onclick="shuffle()">Blanda bitar</button>
+  <button onmousedown="showHint()" onmouseup="hideHint()" ontouchstart="showHint()" ontouchend="hideHint()">Håll för Facit</button>
+</div>
+
+<div id="puzzle-container">
+  <div id="hint"></div>
+  </div>
+
+<div id="winner">
+  <h2>Snyggt! 🎉</h2>
+  <p>Du klarade pusslet!</p>
+  <button onclick="location.reload()">Spela igen</button>
+</div>
+
+<script>
+  const container = document.getElementById('puzzle-container');
+  const cols = 4;
+  const rows = 3;
+  let pieces = [];
+  let draggedPiece = null;
+  let startIdx = null;
+
+  // Initiera pusslet
+  function init() {
+    container.innerHTML = '<div id="hint"></div>';
+    pieces = [];
+    
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const idx = r * cols + c;
+        const div = document.createElement('div');
+        div.classList.add('piece');
+        div.setAttribute('draggable', 'true');
+        div.dataset.idx = idx; // Nuvarande position
+        div.dataset.correct = idx; // Rätt position
+        
+        // Sätt bakgrundspositionen för att visa rätt del av bilden
+        div.style.backgroundPosition = `${(c / (cols-1)) * 100}% ${(r / (rows-1)) * 100}%`;
+        
+        // Events för både mus och touch
+        addEvents(div);
+        
+        pieces.push(div);
+        container.appendChild(div);
+      }
+    }
+    shuffle();
+  }
+
+  function addEvents(el) {
+    // Desktop Drag
+    el.addEventListener('dragstart', dragStart);
+    el.addEventListener('dragover', dragOver);
+    el.addEventListener('drop', dragDrop);
+    el.addEventListener('dragenter', dragEnter);
+    el.addEventListener('dragleave', dragLeave);
+
+    // Mobile Touch (Simulera drag and drop)
+    el.addEventListener('touchstart', touchStart, {passive: false});
+    el.addEventListener('touchmove', touchMove, {passive: false});
+    el.addEventListener('touchend', touchEnd);
+  }
+
+  // --- LOGIK FÖR SKRIVBORD (Mouse) ---
+  function dragStart(e) {
+    draggedPiece = this;
+    startIdx = [...container.children].indexOf(this);
+    this.classList.add('dragging');
+  }
+  function dragOver(e) { e.preventDefault(); }
+  function dragEnter(e) { this.style.filter = "brightness(1.5)"; }
+  function dragLeave(e) { this.style.filter = "none"; }
+  
+  function dragDrop(e) {
+    this.style.filter = "none";
+    swapPieces(draggedPiece, this);
+    draggedPiece.classList.remove('dragging');
+    checkWin();
+  }
+
+  // --- LOGIK FÖR MOBIL (Touch) ---
+  let touchElem = null;
+  
+  function touchStart(e) {
+    e.preventDefault();
+    touchElem = this;
+    this.classList.add('dragging');
+    startIdx = [...container.children].indexOf(this);
+  }
+
+  function touchMove(e) {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const target = document.elementFromPoint(touch.clientX, touch.clientY);
+    
+    // Visuell feedback om man hovrar över en annan bit
+    pieces.forEach(p => p.style.filter = "none");
+    if(target && target.classList.contains('piece') && target !== touchElem) {
+       target.style.filter = "brightness(1.5)";
+    }
+  }
+
+  function touchEnd(e) {
+    const touch = e.changedTouches[0];
+    const target = document.elementFromPoint(touch.clientX, touch.clientY);
+    
+    pieces.forEach(p => p.style.filter = "none");
+    touchElem.classList.remove('dragging');
+    
+    if (target && target.classList.contains('piece') && target !== touchElem) {
+      swapPieces(touchElem, target);
+      checkWin();
+    }
+  }
+
+  // Byt plats på två bitar i DOM:en
+  function swapPieces(nodeA, nodeB) {
+    const parent = nodeA.parentNode;
+    const siblingA = nodeA.nextSibling === nodeB ? nodeA : nodeA.nextSibling;
+    nodeB.parentNode.insertBefore(nodeA, nodeB);
+    parent.insertBefore(nodeB, siblingA);
+  }
+
+  function shuffle() {
+    for (let i = container.children.length; i >= 0; i--) {
+      container.appendChild(container.children[Math.random() * i | 0]);
+    }
+    // Se till att hint-lagret alltid ligger överst eller underst beroende på logik, 
+    // men här låter vi bitarna flyttas runt. Hint ligger 'absolut' så det påverkas inte av grid.
+  }
+
+  function checkWin() {
+    const currentPieces = document.querySelectorAll('.piece');
+    let isWin = true;
+    currentPieces.forEach((p, index) => {
+      // Om biten på plats index (0,1,2..) inte har dataset.correct == index
+      if (parseInt(p.dataset.correct) !== index) isWin = false;
+    });
+
+    if (isWin) {
+      setTimeout(() => document.getElementById('winner').style.display = 'flex', 300);
+    }
+  }
+
+  function showHint() { document.getElementById('hint').style.opacity = '0.5'; }
+  function hideHint() { document.getElementById('hint').style.opacity = '0'; }
+
+  // Starta!
+  window.onload = init;
+
+</script>
+</body>
+</html>
